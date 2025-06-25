@@ -1,0 +1,129 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Smart Meter Reading Validation Lambda with S3 Trigger'
+
+Parameters:
+  S3BucketName:
+    Type: String
+    Default: 'your-image-bucket'
+    Description: 'S3 bucket name for storing meter images'
+  
+  DynamoDBTableName:
+    Type: String
+    Default: 'MeterValidationResults'
+    Description: 'DynamoDB table name for storing validation results'
+
+Resources:
+  # Lambda Execution Role
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${AWS::StackName}-lambda-execution-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: S3Access
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:ListBucket
+                Resource:
+                  - !Sub 'arn:aws:s3:::${S3BucketName}'
+                  - !Sub 'arn:aws:s3:::${S3BucketName}/*'
+        - PolicyName: DynamoDBAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:PutItem
+                  - dynamodb:GetItem
+                  - dynamodb:Query
+                  - dynamodb:Scan
+                Resource: !Sub 'arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${DynamoDBTableName}'
+        - PolicyName: RekognitionAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - rekognition:DetectCustomLabels
+                  - rekognition:DetectText
+                  - rekognition:DescribeProjectVersions
+                  - rekognition:StartProjectVersion
+                  - rekognition:StopProjectVersion
+                Resource: '*'
+
+  # Lambda Function
+  MeterValidationLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${AWS::StackName}-meter-validation'
+      Runtime: python3.9
+      Handler: lambda_function.lambda_handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Code:
+        ZipFile: |
+          import json
+          def lambda_handler(event, context):
+              return {
+                  'statusCode': 200,
+                  'body': json.dumps('Hello from Lambda!')
+              }
+      Timeout: 300  # 5 minutes
+      MemorySize: 512
+      Environment:
+        Variables:
+          S3_BUCKET: !Ref S3BucketName
+          DYNAMODB_TABLE: !Ref DynamoDBTableName
+          MODEL_ARN: 'arn:aws:rekognition:us-east-1:419535873181:project/Smart-meter/version/Smart-meter.2025-06-25T19.03.51/1750858432151'
+          MIN_CONFIDENCE: '95'
+
+  # S3 Bucket Notification Configuration
+  S3BucketNotification:
+    Type: AWS::S3::BucketNotification
+    Properties:
+      Bucket: !Ref S3BucketName
+      LambdaConfigurations:
+        - Event: s3:ObjectCreated:*
+          Function: !GetAtt MeterValidationLambda.Arn
+          Filter:
+            S3Key:
+              Rules:
+                - Name: suffix
+                  Value: .jpg
+                - Name: suffix
+                  Value: .jpeg
+                - Name: suffix
+                  Value: .png
+
+  # Lambda Permission for S3
+  LambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref MeterValidationLambda
+      Action: lambda:InvokeFunction
+      Principal: s3.amazonaws.com
+      SourceArn: !Sub 'arn:aws:s3:::${S3BucketName}'
+
+Outputs:
+  LambdaFunctionArn:
+    Description: 'ARN of the Lambda function'
+    Value: !GetAtt MeterValidationLambda.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-LambdaArn'
+  
+  LambdaFunctionName:
+    Description: 'Name of the Lambda function'
+    Value: !Ref MeterValidationLambda
+    Export:
+      Name: !Sub '${AWS::StackName}-LambdaName' 
